@@ -1,0 +1,226 @@
+---
+title: "Analysing Longitundinal Clinical Trials Data"
+output: 
+  html_notebook:
+    toc: yes
+  html_document:
+    toc: yes
+    df_print: paged
+---
+
+### Assessing the difference in moods from a drug across 6 different time points
+
+# Using R
+
+```{r}
+# Load required libraries
+library(lme4)  # for fitting linear mixed models
+library(psych)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+
+
+set.seed(42)  # For reproducibility
+
+```
+
+## Simulate data
+```{r}
+n_subjects <- 150
+n_timepoints <- 6
+
+# Create DataFrame with subjects, time points, and drug conditions
+data <- data.frame(
+  Subject = rep(1:n_subjects, each = n_timepoints),
+  Time = rep(1:n_timepoints, times = n_subjects),
+  Drug = sample(c(0, 1), n_subjects * n_timepoints, replace = TRUE)  # 0 = placebo, 1 = drug
+)
+
+# Simulate mood data
+# Simulate mood data
+data$Mood <- 6 + 0.3 * data$Time + 2.5 * data$Drug + 0.5 * data$Time * data$Drug + rnorm(n_subjects * n_timepoints)
+
+# View first few rows of the dataset
+head(data)
+```
+
+```{r}
+describe(data)
+```
+
+
+```{r}
+# Center and scale the 'Time' variable
+data$Time_scaled <- scale(data$Time, center = TRUE, scale = TRUE)
+```
+
+The time variable should be centered and scaled to help with interpretation!
+
+
+## 2. Fit Linear Mixed-Effects Models
+```{r}
+# Fit a mixed-effects model with random intercepts for Subject
+model_1 <- lmer(Mood ~ Time_scaled + Drug + (1 | Subject), data = data)
+
+# View model summary
+summary(model_1)
+```
+
+This model tests mood as a function of Time and Drug.
+
+Interpretation: Random intercepts allow each subject to have their own baseline mood level, 
+while the fixed effects (Time and Drug) describe overall trends across all subjects.
+
+Random effects:
+The variance close to 0 indicates there's almost no variability in baseline mood 
+across individuals. The residual variance is the variability in mood scores that 
+isn’t explained by the model’s fixed effects (Time and Drug).
+Since the residual variance is low, this suggests that random effects aren’t 
+contributing much to the model’s fit.
+
+Fixed effects:
+For every 1 SD increase in time, mood increases by 0.94 points (on average for the placebo group), 
+suggesting that mood improves over time regardless of the drug.
+
+If a subject is taking the drug (compared to placebo), their mood increases by 
+4.23 units on average regardless of time. 
+This is a large effect, implying that the drug has a substantial positive impact on mood.
+
+Correlation of fixed effects:
+
+This small correlation between Time_scaled and Drug indicates that there is 
+almost no multicollinearity between these two variables, so their estimates 
+are stable and independent of one another.
+
+
+## 3. Fit a More Complex Model with Random Slopes
+```{r}
+# Fit a mixed-effects model with random intercepts and slopes for Time
+model_2 <- lmer(Mood ~ Time_scaled * Drug + (Time_scaled | Subject), data = data)
+
+# View model summary
+summary(model_2)
+
+```
+
+This model tests mood as a function of Time, Drug, and their interaction (Time × Drug)
+
+Interpretation: The fixed effects include the interaction between Time and Drug, 
+allowing for a changing effect of the drug over time. The random effects
+allows each subject to have their own baseline mood and a unique trajectory over time.
+
+Random effects: 
+The intercept variances indicates no variation in the baseline mood across subjects.
+The time variance indicates some variation in how subjects’ mood changes 
+over time, though the variation is very small. This means most subjects 
+follow a similar trend in mood change over time.
+The residual variance indicates the variability of mood not explained by the 
+fixed or random effects.
+
+Fixed effects:
+Time_scaled: For every 1 standard deviation increase in time in the placebo group, the mood increases by 0.41 points
+
+Drug: Being in the drug group increases mood by 4.23 points (compared to the placebo group), 
+regardless of time. This is a large effect.
+
+Time_scaled:Drug: This is the interaction effect between Time_scaled and Drug. 
+It means that for those in the drug group, the effect of time on mood is 1.02 
+points higher per SD increase in time compared to the placebo group. In other words, 
+the mood improvement over time is much greater in the drug group than in the placebo group.
+
+The high t-values indicate significance! 
+
+Correlation of Fixed Effects:
+Time_scaled and drug:  The negative correlation here suggests that, as the effect 
+of time increases, the effect of the drug decreases. This might be related to 
+the strong interaction effect, as the rate of mood improvement over time is much 
+stronger in the drug group.
+
+Singular fit: 
+Since there is little variation in baseline mood across subjects, 
+we might consider dropping the random intercept term from the model to simplify it
+and prevent overfitting. 
+
+
+```{r}
+# Fit a mixed-effects model with random intercepts and slopes for Time removing
+# the random intercept term for time
+
+model_3 <- lmer(Mood ~ Time_scaled * Drug + (0+ Time_scaled | Subject), data = data)
+
+# View model summary
+summary(model_3)
+
+```
+
+Everything looks almost identical, but no more singularity warning!
+
+## 4. Visualize!
+```{r}
+# Create a new data frame for predictions
+new_data <- data %>%
+  group_by(Subject) %>%
+  summarise(Time_scaled = seq(min(Time_scaled), max(Time_scaled), length.out = 100),
+            Drug = unique(Drug[1]))  # Use unique drug status for each subject
+
+# Get predictions from the model
+new_data$Predicted_Mood <- predict(model_3, newdata = new_data, re.form = ~(0 + Time_scaled | Subject))
+
+# Plot the observed data and the fitted lines
+ggplot(data, aes(x = Time_scaled, y = Mood, color = as.factor(Drug))) +
+  geom_point(alpha = 0.3) +  # Points for observed data
+  geom_line(data = new_data, aes(x = Time_scaled, y = Predicted_Mood, group = Subject), color = "gray") +  # Individual subject lines
+  labs(title = "Mood Over Time by Drug Treatment",
+       x = "Time (Scaled)",
+       y = "Mood",
+       color = "Drug") +
+  theme_minimal()
+```
+
+
+## 5. Compare Models Using Likelihood Ratio Test
+```{r}
+# Compare models using ANOVA (likelihood ratio test)
+anova(model_1, model_3)
+```
+
+Interpretation: AIC (Akaike Information Criterion): A lower AIC indicates a better 
+model fit when comparing models. Model 3 has a lower AIC (2567.8) than Model 1 (2774.9), 
+suggesting it fits the data better.
+
+Actually, all measures indicate Model 3 is better than Model 1! 
+In other words, it is critical to take into the account the interaction effect!
+
+The very low p-value (< 0.001) strongly suggests that the interaction between 
+time and drug treatment is important for explaining the variation in mood.
+
+## 5. Check Model Diagnostics
+```{r}
+# Plot residuals to check assumptions
+plot(residuals(model_3))
+
+```
+
+Interpretation: This function retrieves the residuals of the fitted model model_3. 
+Residuals are the differences between the observed values (in your case, Mood) 
+and the predicted values from the model. They indicate how well the model is fitting the data.
+
+After visually inspecting  for any patterns or trends, we see random scatter around zero:
+this indicates that the model is appropriately specified regarding the linearity and homoscedasticity assumptions.
+
+```{r}
+# Random effects plot
+plot(ranef(model_3))
+
+```
+Interpretation: This function extracts the random effects from the fitted model model_3. 
+Random effects are the components of the model that account for variations 
+attributable to the grouping structure in the data (in this case, Subject). 
+They capture individual differences in the intercepts or slopes based on the random 
+effects specified in the model.
+
+After looking for any notable patterns or clusters in the random effects estimates,
+we see that the random effects are evenly distributed and vary  among subjects:
+this supports the complexity of your model with random effects. 
+
